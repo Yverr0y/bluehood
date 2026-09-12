@@ -150,8 +150,9 @@ do_install() {
 
     <!--
         Call the venv Python directly — no external bash wrapper needed.
-        The daemon itself waits for the macOS Bluetooth controller to be
-        ready before scanning, avoiding "adapter busy" errors at login.
+        bleak waits for CoreBluetooth to report ready before each scan, and
+        the scan loop retries, so a not-yet-ready adapter at login recovers
+        on its own within a cycle or two.
     -->
     <key>ProgramArguments</key>
     <array>
@@ -205,9 +206,9 @@ PLIST
     info "launchd agent loaded and enabled."
 
     # ── Verify ───────────────────────────────────────────────
-    # The launcher waits for Bluetooth, so give it extra time
-    info "Waiting for launcher to confirm Bluetooth readiness …"
-    sleep 8
+    # Give launchd a moment to spawn the process before checking on it
+    info "Waiting for the agent to start …"
+    sleep 5
 
     if launchctl list "${PLIST_LABEL}" &>/dev/null 2>&1; then
         local pid
@@ -217,7 +218,7 @@ PLIST
             info "Dashboard: http://localhost:8080"
         else
             printf "\n${GREEN}✔ Bluehood agent is registered.${NC}\n"
-            info "The launcher is waiting for Bluetooth – check logs for status."
+            info "The agent has not reported a PID yet – check logs for status."
         fi
     else
         warn "Service may not have started – check logs:"
