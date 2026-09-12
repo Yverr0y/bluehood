@@ -558,6 +558,16 @@ HTML_TEMPLATE = """
             color: var(--text-primary);
         }
 
+        .custom-name {
+            color: var(--accent-amber);
+            font-weight: 600;
+        }
+
+        .advertised-name {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+        }
+
         .sighting-count {
             font-size: 0.8rem;
             color: var(--accent-amber);
@@ -1505,7 +1515,7 @@ HTML_TEMPLATE = """
                 case 'vendor':
                     return (device.vendor || '').toLowerCase();
                 case 'identifier':
-                    return (device.friendly_name || '').toLowerCase();
+                    return (device.custom_name || device.friendly_name || '').toLowerCase();
                 case 'sightings':
                     return Number.isFinite(device.total_sightings) ? device.total_sightings : -1;
                 case 'last_seen': {
@@ -1684,7 +1694,7 @@ HTML_TEMPLATE = """
                         return false;
                     }
                     if (searchTerm) {
-                        const searchable = [d.mac, d.vendor, d.friendly_name].join(' ').toLowerCase();
+                        const searchable = [d.mac, d.vendor, d.friendly_name, d.custom_name].join(' ').toLowerCase();
                         if (!searchable.includes(searchTerm)) return false;
                     }
                     return true;
@@ -1723,10 +1733,12 @@ HTML_TEMPLATE = """
 
                 if (compactView) {
                     // Compact: Type, Name/MAC, Sightings, Last Seen, Group
-                    const rawDisplayName = d.friendly_name || d.vendor || d.mac;
-                    let displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
+                    const anyName = d.custom_name || d.friendly_name;
+                    const rawDisplayName = anyName || d.vendor || d.mac;
+                    let displayName = anyName ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
+                    if (d.custom_name) displayName = '<span class="custom-name">' + escapeHtml(displayName) + '</span>';
                     // Truncate long macOS UUID addresses in compact view
-                    if (!d.friendly_name && !d.vendor && isMacOSUUID(d.mac)) {
+                    if (!anyName && !d.vendor && isMacOSUUID(d.mac)) {
                         displayName = displayName.substring(0, 13) + '...';
                     }
                     return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
@@ -1744,13 +1756,29 @@ HTML_TEMPLATE = """
                     '<td><span class="type-badge ' + typeClass + '">' + watchedStar + d.type_icon + ' ' + d.type_label + '</span></td>' +
                     '<td class="mac-addr" title="' + d.mac + '">' + (isMacOSUUID(d.mac) ? obfuscateMAC(d.mac).substring(0, 13) + '...' : obfuscateMAC(d.mac)) + '</td>' +
                     '<td class="vendor-name">' + (d.vendor || '—') + '</td>' +
-                    '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
+                    '<td class="device-name">' + renderIdentifier(d) + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
                     '<td class="last-seen ' + (isRecent ? 'recent' : '') + '" title="' + lastSeenTooltip + '">' + lastSeen + '</td>' +
                     '<td class="group-name">' + groupHtml + '</td>' +
                     '</tr>';
             }).join('');
             updateSelectionUI();
+        }
+
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function renderIdentifier(d) {
+            if (d.custom_name) {
+                const advertised = d.friendly_name ? '<div class="advertised-name" title="Advertised name">' + escapeHtml(obfuscateName(d.friendly_name)) + '</div>' : '';
+                return '<span class="custom-name" title="Custom name">' + escapeHtml(obfuscateName(d.custom_name)) + '</span>' + advertised;
+            }
+            return d.friendly_name ? obfuscateName(d.friendly_name) : '—';
         }
 
         function getTypeClass(type) {
@@ -1826,8 +1854,10 @@ HTML_TEMPLATE = """
                 '</div>' +
                 '<div class="detail-grid">' +
                 '<div class="detail-item"><div class="detail-label">Address</div><div class="detail-value mono" style="font-size:' + (isMacOSUUID(d.mac) ? '0.65rem' : '0.85rem') + '; word-break: break-all;">' + obfuscateMAC(d.mac) + '</div></div>' +
-                '<div class="detail-item"><div class="detail-label">Classification</div><div class="detail-value">' + data.type_label + '</div></div>' +
+                '<div class="detail-item"><div class="detail-label">Classification' + (d.type_is_manual ? ' <span style="color: var(--accent-amber); font-size: 0.6rem;">(manual)</span>' : '') + '</div><select class="form-input" id="device-type" onchange="setDeviceType(\\'' + d.mac + '\\', this.value)" style="font-size: 0.8rem;"><option value="' + (d.device_type || '') + '">' + data.type_label + '</option></select></div>' +
                 '<div class="detail-item"><div class="detail-label">Vendor OUI</div><div class="detail-value">' + (d.vendor || '—') + '</div></div>' +
+                '<div class="detail-item"><div class="detail-label">Custom Name</div><div style="display: flex; gap: 0.4rem;"><input type="text" class="form-input" id="device-custom-name" maxlength="100" placeholder="e.g., Dad\\'s phone" value="' + escapeAttr(d.custom_name || '') + '" style="font-size: 0.8rem; flex: 1; min-width: 0;" onkeydown="if (event.key === \\'Enter\\') { event.preventDefault(); saveCustomName(\\'' + d.mac + '\\'); }"><button class="btn" type="button" onclick="saveCustomName(\\'' + d.mac + '\\')">Save</button></div></div>' +
+                '<div class="detail-item"><div class="detail-label">Advertised Identifier</div><div class="detail-value">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Proximity Zone</div><div class="detail-value" style="color: ' + proximityColor + '; text-transform: uppercase;">' + proximityZone + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">First Contact</div><div class="detail-value mono">' + (d.first_seen ? new Date(d.first_seen).toLocaleString() : '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Last Contact</div><div class="detail-value mono">' + (d.last_seen ? new Date(d.last_seen).toLocaleString() : '—') + '</div></div>' +
@@ -1878,6 +1908,65 @@ HTML_TEMPLATE = """
             loadCorrelatedDevices(d.mac);
             loadRotationCandidates(d.mac);
             loadGroupsForDevice(d.group_id);
+            loadDeviceTypesForDevice(d.device_type, d.type_is_manual, data.type_label);
+        }
+
+        function escapeAttr(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        let cachedDeviceTypes = [];
+
+        async function loadDeviceTypesForDevice(currentType, isManual, autoLabelText) {
+            const select = document.getElementById('device-type');
+            if (!select) return;
+
+            if (cachedDeviceTypes.length === 0) {
+                try {
+                    const response = await fetch('/api/device-types');
+                    const data = await response.json();
+                    cachedDeviceTypes = data.types || [];
+                } catch (error) { return; }
+            }
+
+            // First option keeps automatic classification; a manual pick locks it in.
+            const autoLabel = isManual ? 'Automatic (clear override)' : 'Automatic (' + (autoLabelText || 'Unknown') + ')';
+            select.innerHTML = '<option value=""' + (isManual ? '' : ' selected') + '>' + autoLabel + '</option>' +
+                cachedDeviceTypes.map(t => '<option value="' + t.id + '"' + (isManual && t.id === currentType ? ' selected' : '') + '>' + t.icon + ' ' + t.label + '</option>').join('');
+        }
+
+        async function setDeviceType(mac, deviceType) {
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/type', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ device_type: deviceType || '' })
+                });
+                if (response.ok) {
+                    await refreshDevices();
+                    showDevice(mac);
+                }
+            } catch (error) { console.error('Error:', error); }
+        }
+
+        async function saveCustomName(mac) {
+            const input = document.getElementById('device-custom-name');
+            if (!input) return;
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: input.value })
+                });
+                if (response.ok) {
+                    await refreshDevices();
+                    showDevice(mac);
+                }
+            } catch (error) { console.error('Error:', error); }
         }
 
         let cachedGroups = [];
@@ -2018,10 +2107,11 @@ HTML_TEMPLATE = """
                     return;
                 }
                 container.innerHTML = data.correlated_devices.slice(0, 5).map(c => {
-                    const rawPrimaryName = c.friendly_name || c.vendor || 'Unknown';
-                    const primaryName = c.friendly_name ? obfuscateName(rawPrimaryName) : rawPrimaryName;
-                    const rawSecondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
-                    const secondaryInfo = (c.friendly_name && c.vendor) ? rawSecondaryInfo : obfuscateMAC(rawSecondaryInfo);
+                    const cName = c.custom_name || c.friendly_name;
+                    const rawPrimaryName = cName || c.vendor || 'Unknown';
+                    const primaryName = cName ? escapeHtml(obfuscateName(rawPrimaryName)) : rawPrimaryName;
+                    const rawSecondaryInfo = cName ? (c.vendor || c.mac) : c.mac;
+                    const secondaryInfo = (cName && c.vendor) ? rawSecondaryInfo : obfuscateMAC(rawSecondaryInfo);
                     const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
                     const syncedEdges = (c.synced_arrivals || 0) + (c.synced_departures || 0);
                     const syncLine = syncedEdges > 0
@@ -2068,8 +2158,9 @@ HTML_TEMPLATE = """
                     return;
                 }
                 html += candidates.map(c => {
-                    const rawPrimary = c.friendly_name || c.vendor || c.mac;
-                    const primaryName = c.friendly_name ? obfuscateName(rawPrimary) : (c.vendor ? rawPrimary : obfuscateMAC(c.mac));
+                    const cName = c.custom_name || c.friendly_name;
+                    const rawPrimary = cName || c.vendor || c.mac;
+                    const primaryName = cName ? escapeHtml(obfuscateName(rawPrimary)) : (c.vendor ? rawPrimary : obfuscateMAC(c.mac));
                     const overlapPct = Math.round((c.overlap_ratio || 0) * 100);
                     const detail = 'RSSI ' + c.mean_rssi + '±' + c.rssi_stddev + ' (Δ' + c.rssi_delta + ') · ping ' + formatPing(c.ping_interval_seconds) + ' · ' + overlapPct + '% overlap';
                     const nameBadge = c.name_match ? ' <span style="font-size: 0.6rem; color: var(--accent-amber); border: 1px solid var(--accent-amber); border-radius: 3px; padding: 0 0.25rem; vertical-align: middle;">name match</span>' : '';
@@ -2500,17 +2591,27 @@ SETTINGS_TEMPLATE = """
 
             <form id="settings-form">
                 <div class="panel">
-                    <div class="panel-header">Push Notification Channel (ntfy.sh)</div>
+                    <div class="panel-header">Push Notification Channel (ntfy)</div>
                     <div class="panel-body">
+                        <div class="form-group">
+                            <label class="form-label">Server URL</label>
+                            <input type="url" class="form-input" id="ntfy_server" placeholder="https://ntfy.sh">
+                            <div class="form-check-desc" style="margin-top: 0.3rem;">Use https://ntfy.sh or point at your own self-hosted ntfy instance (e.g., http://192.168.1.10:8090)</div>
+                        </div>
                         <div class="form-group">
                             <label class="form-label">Topic Identifier</label>
                             <input type="text" class="form-input" id="ntfy_topic" placeholder="e.g., bluehood-ops-alerts">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Access Token (optional)</label>
+                            <input type="password" class="form-input" id="ntfy_token" placeholder="tk_..." autocomplete="off">
+                            <div class="form-check-desc" style="margin-top: 0.3rem;">Sent as a Bearer token for servers or topics that require authentication</div>
                         </div>
                         <label class="form-check">
                             <input type="checkbox" id="ntfy_enabled">
                             <div>
                                 <div class="form-check-label">Enable Push Notifications</div>
-                                <div class="form-check-desc">Route alerts through ntfy.sh service</div>
+                                <div class="form-check-desc">Route alerts through the ntfy server above</div>
                             </div>
                         </label>
                     </div>
@@ -2705,7 +2806,9 @@ SETTINGS_TEMPLATE = """
             try {
                 const response = await fetch('/api/settings');
                 const data = await response.json();
+                document.getElementById('ntfy_server').value = data.ntfy_server || '';
                 document.getElementById('ntfy_topic').value = data.ntfy_topic || '';
+                document.getElementById('ntfy_token').value = data.ntfy_token || '';
                 document.getElementById('ntfy_enabled').checked = data.ntfy_enabled;
                 document.getElementById('notify_new_device').checked = data.notify_new_device;
                 document.getElementById('new_device_threshold_minutes').value = data.new_device_threshold_minutes || 0;
@@ -2723,7 +2826,9 @@ SETTINGS_TEMPLATE = """
 
         function gatherAllSettings() {
             return {
+                ntfy_server: document.getElementById('ntfy_server').value,
                 ntfy_topic: document.getElementById('ntfy_topic').value,
+                ntfy_token: document.getElementById('ntfy_token').value,
                 ntfy_enabled: document.getElementById('ntfy_enabled').checked,
                 notify_new_device: document.getElementById('notify_new_device').checked,
                 new_device_threshold_minutes: parseInt(document.getElementById('new_device_threshold_minutes').value) || 0,

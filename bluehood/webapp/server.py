@@ -76,6 +76,8 @@ class WebServer:
         self.app.router.add_post("/api/device/{mac}/watch", self.api_toggle_watch)
         self.app.router.add_post("/api/device/{mac}/group", self.api_set_device_group)
         self.app.router.add_post("/api/device/{mac}/name", self.api_set_device_name)
+        self.app.router.add_post("/api/device/{mac}/type", self.api_set_device_type)
+        self.app.router.add_get("/api/device-types", self.api_device_types)
         self.app.router.add_get("/api/device/{mac}/rssi", self.api_device_rssi)
         self.app.router.add_get("/api/device/{mac}/dwell", self.api_device_dwell)
         self.app.router.add_get("/api/device/{mac}/correlation", self.api_device_correlation)
@@ -212,6 +214,7 @@ class WebServer:
                 "mac": d.mac,
                 "vendor": d.vendor,
                 "friendly_name": d.friendly_name,
+                "custom_name": d.custom_name,
                 "device_type": device_type,
                 "type_icon": get_type_icon(device_type),
                 "type_label": get_type_label(device_type),
@@ -359,7 +362,7 @@ class WebServer:
             return data
 
         writer.writerow([
-            "MAC", "Vendor", "Identifier", "Type", "BT_Type", "Device_Class",
+            "MAC", "Vendor", "Identifier", "Custom_Name", "Type", "BT_Type", "Device_Class",
             "Watched", "Ignored", "First_Seen", "Last_Seen", "Total_Sightings",
             "Group", "Service_UUIDs", "UUID_Names", "Notes",
             "Sighting_Time", "RSSI", "Proximity_Zone",
@@ -387,6 +390,7 @@ class WebServer:
                     obfuscate_mac(d.mac),
                     d.vendor or "",
                     obfuscate_name(d.friendly_name) if d.friendly_name else "",
+                    obfuscate_name(d.custom_name) if d.custom_name else "",
                     get_type_label(device_type) or device_type or "",
                     d.bt_type or "",
                     d.device_class if d.device_class is not None else "",
@@ -441,6 +445,7 @@ class WebServer:
                     "mac": obfuscate_mac(d.mac),
                     "vendor": d.vendor,
                     "identifier": obfuscate_name(d.friendly_name) if d.friendly_name else None,
+                    "custom_name": obfuscate_name(d.custom_name) if d.custom_name else None,
                     "type": get_type_label(device_type) or device_type,
                     "device_type": device_type,
                     "bt_type": d.bt_type,
@@ -499,7 +504,9 @@ class WebServer:
                 "mac": device.mac,
                 "vendor": device.vendor,
                 "friendly_name": device.friendly_name,
+                "custom_name": device.custom_name,
                 "device_type": device_type,
+                "type_is_manual": bool(device.device_type),
                 "ignored": device.ignored,
                 "watched": device.watched,
                 "first_seen": (device.first_seen.isoformat() + "Z") if device.first_seen else None,
@@ -559,7 +566,11 @@ class WebServer:
             return web.json_response({"error": str(e)}, status=400)
 
     async def api_set_device_name(self, request: web.Request) -> web.Response:
-        """Set the friendly name for a device."""
+        """Set (or clear) the operator-assigned custom name for a device.
+
+        The advertised ``friendly_name`` is left untouched so the original
+        identifier stays visible alongside the custom label.
+        """
         mac = request.match_info["mac"]
         device = await db.get_device(mac)
 
@@ -568,11 +579,52 @@ class WebServer:
 
         try:
             data = await request.json()
-            name = data.get("name", "")
-            await db.set_friendly_name(mac, name)
-            return web.json_response({"mac": mac, "friendly_name": name})
+            name = str(data.get("name") or "").strip()
+            if len(name) > 100:
+                return web.json_response({"error": "Name too long (max 100 characters)"}, status=400)
+            await db.set_custom_name(mac, name)
+            return web.json_response({"mac": mac, "custom_name": name or None})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
+
+    async def api_set_device_type(self, request: web.Request) -> web.Response:
+        """Override the classification for a device.
+
+        Send an empty ``device_type`` to clear the override and fall back to
+        automatic classification.
+        """
+        mac = request.match_info["mac"]
+        device = await db.get_device(mac)
+
+        if not device:
+            return web.json_response({"error": "Device not found"}, status=404)
+
+        try:
+            data = await request.json()
+            device_type = str(data.get("device_type") or "").strip().lower()
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        valid_types = {t[0] for t in get_all_types()}
+        if device_type and device_type not in valid_types:
+            return web.json_response({"error": f"Unknown device type: {device_type}"}, status=400)
+
+        await db.set_device_type(mac, device_type or None)
+        effective = device_type or classify_device(
+            device.vendor, device.friendly_name, device.service_uuids, device.device_class
+        )
+        return web.json_response({
+            "mac": mac,
+            "device_type": effective,
+            "type_label": get_type_label(effective),
+            "type_is_manual": bool(device_type),
+        })
+
+    async def api_device_types(self, request: web.Request) -> web.Response:
+        """List the classifications a device can be assigned."""
+        return web.json_response({
+            "types": [{"id": t[0], "icon": t[1], "label": t[2]} for t in get_all_types()]
+        })
 
     async def api_device_rssi(self, request: web.Request) -> web.Response:
         """Get RSSI history for a device."""
@@ -725,6 +777,7 @@ class WebServer:
                 "mac": r["mac"],
                 "vendor": r.get("vendor"),
                 "friendly_name": r.get("friendly_name"),
+                "custom_name": r.get("custom_name"),
                 "device_type": device_type,
                 "type_icon": get_type_icon(device_type),
                 "type_label": get_type_label(device_type),
@@ -763,6 +816,8 @@ class WebServer:
         return web.json_response({
             "ntfy_topic": settings.ntfy_topic or "",
             "ntfy_enabled": settings.ntfy_enabled,
+            "ntfy_server": settings.ntfy_server or "",
+            "ntfy_token": settings.ntfy_token or "",
             "notify_new_device": settings.notify_new_device,
             "new_device_threshold_minutes": settings.new_device_threshold_minutes,
             "notify_watched_return": settings.notify_watched_return,
@@ -780,9 +835,14 @@ class WebServer:
         try:
             data = await request.json()
             heartbeat_url = data.get("heartbeat_url", "").strip() or None
+            ntfy_server = str(data.get("ntfy_server") or "").strip().rstrip("/")
+            if ntfy_server and not ntfy_server.lower().startswith(("http://", "https://")):
+                return web.json_response({"error": "ntfy server must start with http:// or https://"}, status=400)
             settings = db.Settings(
                 ntfy_topic=data.get("ntfy_topic"),
                 ntfy_enabled=data.get("ntfy_enabled", False),
+                ntfy_server=ntfy_server,
+                ntfy_token=str(data.get("ntfy_token") or "").strip() or None,
                 notify_new_device=data.get("notify_new_device", False),
                 new_device_threshold_minutes=int(data.get("new_device_threshold_minutes", 0)),
                 notify_watched_return=data.get("notify_watched_return", True),

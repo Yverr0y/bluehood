@@ -19,6 +19,13 @@ SCAN_INTERVAL = 10
 # How long to scan for each cycle (seconds)
 SCAN_DURATION = 5
 
+# Web dashboard port (the --port CLI flag takes precedence)
+WEB_PORT = int(os.environ.get("BLUEHOOD_PORT", "8080"))
+
+# ntfy server base URL. Point this at a self-hosted ntfy instance to avoid
+# ntfy.sh. The value saved in the GUI settings takes precedence.
+NTFY_SERVER = os.environ.get("BLUEHOOD_NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/") or "https://ntfy.sh"
+
 # Bluetooth adapter (None = auto-select, or specify like "hci0")
 BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_ADAPTER", None)
 

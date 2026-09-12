@@ -16,7 +16,7 @@ from typing import Optional
 import aiohttp
 
 from . import db, __version__
-from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT
+from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT, WEB_PORT
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
@@ -253,6 +253,7 @@ class BluehoodDaemon:
                     "mac": d.mac,
                     "vendor": d.vendor,
                     "friendly_name": d.friendly_name,
+                    "custom_name": d.custom_name,
                     "device_type": device_type,
                     "ignored": d.ignored,
                     "first_seen": (d.first_seen.isoformat() + "Z") if d.first_seen else None,
@@ -266,7 +267,7 @@ class BluehoodDaemon:
             mac = request.get("mac")
             name = request.get("name")
             if mac and name is not None:
-                await db.set_friendly_name(mac, name)
+                await db.set_custom_name(mac, name)
                 return {"status": "ok"}
             return {"status": "error", "message": "Missing mac or name"}
 
@@ -573,8 +574,8 @@ def main() -> None:
     parser.add_argument(
         "-p", "--port",
         type=int,
-        default=8080,
-        help="Web dashboard port (default: 8080)"
+        default=None,
+        help=f"Web dashboard port (default: {WEB_PORT}, env: BLUEHOOD_PORT)"
     )
     parser.add_argument(
         "--metrics-port",
@@ -594,7 +595,7 @@ def main() -> None:
             print("No Bluetooth adapters found")
         return
 
-    web_port = None if args.no_web else args.port
+    web_port = None if args.no_web else (args.port or WEB_PORT)
     metrics_port = args.metrics_port or METRICS_PORT
     daemon = BluehoodDaemon(adapter=args.adapter, classic_adapter=args.classic_adapter, web_port=web_port, metrics_port=metrics_port)
     try:

@@ -1,4 +1,4 @@
-"""Notification system using ntfy.sh for push notifications."""
+"""Notification system using ntfy (ntfy.sh or a self-hosted instance)."""
 
 import asyncio
 import logging
@@ -8,16 +8,19 @@ from typing import Optional
 import aiohttp
 
 from . import db
+from .config import NTFY_SERVER
 from .db import Device, Settings
 
 logger = logging.getLogger(__name__)
 
-# ntfy.sh base URL
-NTFY_BASE_URL = "https://ntfy.sh"
+
+def _device_label(device: Device) -> str:
+    """Name to use for a device in notification text."""
+    return device.custom_name or device.friendly_name or device.vendor or device.mac
 
 
 class NotificationManager:
-    """Manages push notifications via ntfy.sh."""
+    """Manages push notifications via ntfy."""
 
     def __init__(self):
         self._settings: Optional[Settings] = None
@@ -56,7 +59,7 @@ class NotificationManager:
         priority: int = 3,
         tags: Optional[list[str]] = None,
     ) -> bool:
-        """Send a notification via ntfy.sh.
+        """Send a notification via ntfy.
 
         Priority levels: 1=min, 2=low, 3=default, 4=high, 5=urgent
         """
@@ -70,7 +73,8 @@ class NotificationManager:
         if not self._session:
             self._session = aiohttp.ClientSession()
 
-        url = f"{NTFY_BASE_URL}/{self._settings.ntfy_topic}"
+        server = (self._settings.ntfy_server or NTFY_SERVER).rstrip("/")
+        url = f"{server}/{self._settings.ntfy_topic}"
 
         headers = {
             "Title": title,
@@ -78,6 +82,8 @@ class NotificationManager:
         }
         if tags:
             headers["Tags"] = ",".join(tags)
+        if self._settings.ntfy_token:
+            headers["Authorization"] = f"Bearer {self._settings.ntfy_token}"
 
         try:
             async with self._session.post(
@@ -112,7 +118,7 @@ class NotificationManager:
         # Check for new device notification
         if self._settings.notify_new_device and not device.new_device_notified:
             threshold = self._settings.new_device_threshold_minutes
-            name = device.friendly_name or device.vendor or device.mac
+            name = _device_label(device)
 
             if threshold == 0 and is_new:
                 # Immediate mode: notify on first sighting
@@ -148,7 +154,7 @@ class NotificationManager:
                 # Device returning after absence
                 if (self._settings.notify_watched_return and
                         minutes_absent >= self._settings.watched_return_minutes):
-                    name = device.friendly_name or device.vendor or device.mac
+                    name = _device_label(device)
                     absence_str = self._format_duration(minutes_absent)
                     await self._send_notification(
                         title="Watched Device Returned",
@@ -191,7 +197,7 @@ class NotificationManager:
                     # Already notified within the last hour
                     continue
 
-                name = device.friendly_name or device.vendor or device.mac
+                name = _device_label(device)
                 absence_str = self._format_duration(
                     (now - device.last_seen).total_seconds() / 60
                 )

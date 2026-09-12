@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass
 
-from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, PRUNE_DAYS, PRUNE_MIN_SIGHTINGS
+from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, NTFY_SERVER, PRUNE_DAYS, PRUNE_MIN_SIGHTINGS
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,16 @@ class Device:
     group_id: Optional[int] = None  # Device group
     notes: Optional[str] = None  # Operator notes
     new_device_notified: bool = True  # Whether new-device notification has been sent
+    custom_name: Optional[str] = None  # Operator-assigned name; never overwritten by scans
 
     def __post_init__(self):
         if self.service_uuids is None:
             self.service_uuids = []
+
+    @property
+    def display_name(self) -> Optional[str]:
+        """Best human-readable name: operator-assigned first, then advertised."""
+        return self.custom_name or self.friendly_name
 
 
 @dataclass
@@ -63,6 +69,8 @@ class Settings:
     # Notification settings
     ntfy_topic: Optional[str] = None
     ntfy_enabled: bool = False
+    ntfy_server: str = NTFY_SERVER          # base URL; self-hosted instances supported
+    ntfy_token: Optional[str] = None        # optional access token for protected topics
     notify_new_device: bool = False
     notify_watched_return: bool = True
     notify_watched_leave: bool = True
@@ -277,6 +285,7 @@ async def init_db() -> None:
             ("group_id", "INTEGER REFERENCES device_groups(id)"),
             ("notes", "TEXT"),
             ("new_device_notified", "INTEGER DEFAULT 1"),
+            ("custom_name", "TEXT"),
         ]
 
         for column, column_type in migrations:
@@ -317,6 +326,7 @@ def _parse_device_row(row) -> Device:
         group_id=row["group_id"] if "group_id" in keys else None,
         notes=row["notes"] if "notes" in keys else None,
         new_device_notified=bool(row["new_device_notified"]) if "new_device_notified" in keys else True,
+        custom_name=row["custom_name"] if "custom_name" in keys else None,
     )
 
 
@@ -385,9 +395,10 @@ def _build_device_query_filters(
     if search_value:
         wildcard = f"%{search_value}%"
         conditions.append(
-            "(d.mac LIKE ? OR COALESCE(d.vendor, '') LIKE ? OR COALESCE(d.friendly_name, '') LIKE ?)"
+            "(d.mac LIKE ? OR COALESCE(d.vendor, '') LIKE ? OR COALESCE(d.friendly_name, '') LIKE ?"
+            " OR COALESCE(d.custom_name, '') LIKE ?)"
         )
-        params.extend([wildcard, wildcard, wildcard])
+        params.extend([wildcard, wildcard, wildcard, wildcard])
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     return where_clause, params
@@ -397,7 +408,7 @@ _DEVICE_SORT_MAP = {
     "class": "COALESCE(d.device_type, 'unknown')",
     "mac": "d.mac",
     "vendor": "COALESCE(d.vendor, '')",
-    "identifier": "COALESCE(d.friendly_name, '')",
+    "identifier": "COALESCE(d.custom_name, d.friendly_name, '')",
     "sightings": "d.total_sightings",
     "last_seen": "COALESCE(d.last_seen, '')",
     "group": "COALESCE(g.name, '')",
@@ -723,6 +734,21 @@ async def set_friendly_name(mac: str, name: str) -> None:
         await db.commit()
 
 
+async def set_custom_name(mac: str, name: Optional[str]) -> None:
+    """Set (or clear, with an empty value) the operator-assigned name for a device.
+
+    Unlike ``friendly_name``, which holds the name the device advertises, this
+    value is only ever written by the operator and is never touched by scans.
+    """
+    cleaned = (name or "").strip()
+    async with _connect() as db:
+        await db.execute(
+            "UPDATE devices SET custom_name = ? WHERE mac = ?",
+            (cleaned if cleaned else None, mac)
+        )
+        await db.commit()
+
+
 async def set_ignored(mac: str, ignored: bool) -> None:
     """Set whether a device is ignored."""
     async with _connect() as db:
@@ -743,8 +769,8 @@ async def set_watched(mac: str, watched: bool) -> None:
         await db.commit()
 
 
-async def set_device_type(mac: str, device_type: str) -> None:
-    """Set the device type for a device."""
+async def set_device_type(mac: str, device_type: Optional[str]) -> None:
+    """Set the device type for a device (None clears a manual override)."""
     async with _connect() as db:
         await db.execute(
             "UPDATE devices SET device_type = ? WHERE mac = ?",
@@ -995,10 +1021,10 @@ async def search_devices(
                     SELECT *, total_sightings as range_sightings,
                            first_seen as range_first, last_seen as range_last
                     FROM devices
-                    WHERE mac LIKE ? OR friendly_name LIKE ? OR vendor LIKE ?
+                    WHERE mac LIKE ? OR friendly_name LIKE ? OR vendor LIKE ? OR custom_name LIKE ?
                     ORDER BY last_seen DESC
                 """
-                params = [f"%{mac_filter}%", f"%{mac_filter}%", f"%{mac_filter}%"]
+                params = [f"%{mac_filter}%"] * 4
             else:
                 query = """
                     SELECT *, total_sightings as range_sightings,
@@ -1015,6 +1041,7 @@ async def search_devices(
                     "mac": row["mac"],
                     "vendor": row["vendor"],
                     "friendly_name": row["friendly_name"],
+                    "custom_name": row["custom_name"] if "custom_name" in row.keys() else None,
                     "device_type": row["device_type"] if "device_type" in row.keys() else None,
                     "device_class": row["device_class"] if "device_class" in row.keys() else None,
                     "group_id": row["group_id"] if "group_id" in row.keys() else None,
@@ -1045,6 +1072,8 @@ async def get_settings() -> Settings:
     return Settings(
         ntfy_topic=settings_dict.get("ntfy_topic"),
         ntfy_enabled=settings_dict.get("ntfy_enabled", "0") == "1",
+        ntfy_server=(settings_dict.get("ntfy_server") or "").strip().rstrip("/") or NTFY_SERVER,
+        ntfy_token=settings_dict.get("ntfy_token") or None,
         notify_new_device=settings_dict.get("notify_new_device", "0") == "1",
         notify_watched_return=settings_dict.get("notify_watched_return", "1") == "1",
         notify_watched_leave=settings_dict.get("notify_watched_leave", "1") == "1",
@@ -1077,6 +1106,8 @@ async def update_settings(settings: Settings) -> None:
         settings_pairs = [
             ("ntfy_topic", settings.ntfy_topic or ""),
             ("ntfy_enabled", "1" if settings.ntfy_enabled else "0"),
+            ("ntfy_server", (settings.ntfy_server or "").strip().rstrip("/")),
+            ("ntfy_token", settings.ntfy_token or ""),
             ("notify_new_device", "1" if settings.notify_new_device else "0"),
             ("notify_watched_return", "1" if settings.notify_watched_return else "0"),
             ("notify_watched_leave", "1" if settings.notify_watched_leave else "0"),
@@ -1455,6 +1486,7 @@ async def get_correlated_devices(
                 s2.mac,
                 d.vendor,
                 d.friendly_name,
+                d.custom_name,
                 d.device_type,
                 COUNT(*) as co_occurrences,
                 d.total_sightings
@@ -1525,6 +1557,7 @@ async def get_correlated_devices(
                 "mac": row["mac"],
                 "vendor": row["vendor"],
                 "friendly_name": row["friendly_name"],
+                "custom_name": row["custom_name"],
                 "device_type": row["device_type"],
                 "co_occurrences": row["co_occurrences"],
                 "total_sightings": row["total_sightings"],
@@ -1661,7 +1694,7 @@ async def get_rotation_candidates(
             sighting_rows = await cursor.fetchall()
 
         async with db.execute(
-            f"SELECT mac, vendor, friendly_name, device_type FROM devices WHERE mac IN ({placeholders})",
+            f"SELECT mac, vendor, friendly_name, custom_name, device_type FROM devices WHERE mac IN ({placeholders})",
             cand_macs
         ) as cursor:
             meta = {r["mac"]: r for r in await cursor.fetchall()}
@@ -1720,6 +1753,7 @@ async def get_rotation_candidates(
             "mac": cmac,
             "vendor": m["vendor"],
             "friendly_name": m["friendly_name"],
+            "custom_name": m["custom_name"],
             "device_type": m["device_type"],
             "name_match": name_match,
             "confidence": confidence,

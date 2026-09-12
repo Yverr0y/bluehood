@@ -63,7 +63,8 @@ Bluehood is a Bluetooth scanner that:
 ### Device Management
 - Mark devices as "Watched" for tracking personal devices
 - Organize devices into custom groups
-- Set friendly names for known devices
+- Give devices a custom name (the advertised name stays visible alongside it)
+- Override the detected classification of any device
 - Add custom notes/tags to any device
 - Device type detection (phones, audio, wearables, IoT, vehicles, etc.)
 
@@ -79,8 +80,8 @@ Bluehood is a Bluetooth scanner that:
 - Search by MAC, vendor, or name
 - Date range search for historical queries
 
-### Notifications (via ntfy.sh)
-- Push notifications to your phone/desktop
+### Notifications (via ntfy)
+- Push notifications to your phone/desktop through ntfy.sh or a self-hosted ntfy server
 - Notify when new devices are detected
 - Notify when watched devices return
 - Notify when watched devices leave
@@ -157,6 +158,8 @@ The web dashboard will be available at **http://localhost:8080**
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter for BLE scanning (e.g., `hci0`) |
 | `BLUEHOOD_CLASSIC_ADAPTER` | same as `BLUEHOOD_ADAPTER` | Separate adapter for classic Bluetooth scanning (e.g., `hci1`). When set to a different adapter, BLE and classic scans run concurrently. |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
+| `BLUEHOOD_PORT` | `8080` | Web dashboard port. The container uses host networking, so change this (rather than a port mapping) if 8080 is taken |
+| `BLUEHOOD_NTFY_SERVER` | `https://ntfy.sh` | Base URL of the ntfy server for push notifications; point it at a self-hosted instance. The value saved in the Settings page takes precedence |
 | `BLUEHOOD_METRICS_PORT` | disabled | Prometheus metrics port (e.g., `9199`) |
 | `BLUEHOOD_HEARTBEAT_URL` | disabled | URL to POST heartbeat check-ins (e.g., a healthchecks.io or uptime-kuma push URL) |
 | `BLUEHOOD_HEARTBEAT_INTERVAL` | `300` | Seconds between heartbeat check-ins |
@@ -241,7 +244,7 @@ The web dashboard will be available at **http://localhost:8080**
 # Start with web dashboard (default port 8080)
 bluehood
 
-# Specify a different port
+# Specify a different port (or set BLUEHOOD_PORT)
 bluehood --port 9000
 
 # Use a specific Bluetooth adapter
@@ -302,11 +305,11 @@ Enable screenshot mode from the sidebar to obfuscate sensitive data before shari
 
 ## Push Notifications
 
-Bluehood can send push notifications via [ntfy.sh](https://ntfy.sh), a free, open-source notification service.
+Bluehood can send push notifications via [ntfy](https://ntfy.sh), a free, open-source notification service. You can use the public ntfy.sh server or your own self-hosted instance.
 
-1. Create a topic at ntfy.sh (e.g., `bluehood-myname-alerts`)
+1. Create a topic at ntfy.sh (e.g., `bluehood-myname-alerts`), or on your own ntfy server
 2. Subscribe to the topic on your phone using the ntfy app
-3. In Bluehood settings, enter your topic name and enable notifications
+3. In Bluehood settings, enter the server URL (defaults to `https://ntfy.sh`), your topic name, and an access token if your server requires one, then enable notifications
 4. Configure which events trigger notifications:
    - New device detected
    - Watched device returns (after being absent)
